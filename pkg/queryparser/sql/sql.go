@@ -1,0 +1,631 @@
+package sql
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"regexp"
+	"strings"
+
+	"github.com/flightctl/flightctl/pkg/queryparser"
+)
+
+type FunctionHandler func(args ...string) (*FunctionResult, error)
+type verificationHandler func(qf *queryparser.QueryFunc) error
+type SQLParserOption func(*SQLParser) error
+
+type FunctionResult struct {
+	Args  []string
+	Query string
+}
+
+type handler struct {
+	usedBy        *queryparser.Set[string]
+	Verifications []verificationHandler
+	handle        FunctionHandler
+}
+
+type SQLParser struct {
+	funcs     map[string]handler
+	tokenizer queryparser.Tokenizer
+}
+
+func withKeyArg() verificationHandler {
+	return func(qf *queryparser.QueryFunc) error {
+		args := qf.Args()
+		if len(args) == 0 {
+			return fmt.Errorf("no arguments specified for function %s", qf.Name())
+		}
+
+		if queryparser.IsLiteral(args[0]) {
+			return fmt.Errorf("the first argument must be of type 'key' for function %s", qf.Name())
+		}
+
+		if args[0].(*queryparser.QueryArgFunc).Value().Name() != "K" {
+			return fmt.Errorf("the first argument must be of type 'key' for function %s", qf.Name())
+		}
+
+		return nil
+	}
+}
+
+func withValAndLiteral() verificationHandler {
+	return func(qf *queryparser.QueryFunc) error {
+		args := qf.Args()
+		if len(args) == 0 {
+			return fmt.Errorf("no arguments specified for function %s", qf.Name())
+		}
+
+		if queryparser.IsLiteral(args[0]) {
+			return fmt.Errorf("the first argument must be the function 'V' for function %s", qf.Name())
+		}
+
+		if args[0].(*queryparser.QueryArgFunc).Value().Name() != "V" {
+			return fmt.Errorf("the first argument must be the function 'V' for function %s", qf.Name())
+		}
+
+		for _, arg := range args[1:] {
+			if !queryparser.IsLiteral(arg) {
+				return fmt.Errorf("all arguments after the first must be literals for function %s", qf.Name())
+			}
+		}
+		return nil
+	}
+}
+
+func withNoLiterals() verificationHandler {
+	return func(qf *queryparser.QueryFunc) error {
+		for _, arg := range qf.Args() {
+			if queryparser.IsLiteral(arg) {
+				return fmt.Errorf("does not allow literals")
+			}
+		}
+		return nil
+	}
+}
+
+// WithTokenizer sets a custom tokenizer for the SQLParser.
+// This allows for overriding the default tokenization behavior with a user-provided tokenizer
+func WithTokenizer(tokenizer queryparser.Tokenizer) SQLParserOption {
+	return func(sp *SQLParser) error {
+		sp.tokenizer = tokenizer
+		return nil
+	}
+}
+
+// WithOverrideFunction allows you to override an existing SQL function
+// in the SQLParser with a custom implementation.
+func WithOverrideFunction(name string, f FunctionHandler) SQLParserOption {
+	return func(sp *SQLParser) error {
+		h, exists := sp.funcs[name]
+		if !exists {
+			return fmt.Errorf("does not exist")
+		}
+
+		h.handle = f
+		sp.funcs[name] = h
+		return nil
+	}
+}
+
+// NewSQLParser initializes and returns a new instance of Parser.
+//
+// The SQLParser is configured with a set of predefined SQL functions
+// that can be used to construct queries, including logical operations
+// (AND, OR), comparison operators (EQ, NEQ, LT, LTE, GT, GTE), and
+// other specialized functions (IN, NOTIN, LIKE, NLIKE, ISNULL, ISNOTNULL, CONTAINS, OVERLAPS, ANY, etc.).
+func NewSQLParser(options ...SQLParserOption) (queryparser.Parser, error) {
+	sp := &SQLParser{}
+	sp.funcs = map[string]handler{
+		"AND": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "OR"),
+			Verifications: []verificationHandler{withNoLiterals()},
+			handle:        sp.queryAnd,
+		},
+		"OR": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND"),
+			Verifications: []verificationHandler{withNoLiterals()},
+			handle:        sp.queryOr,
+		},
+		"EQ": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryEqual,
+		},
+		"NEQ": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotEqual,
+		},
+		"LT": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryLessThan,
+		},
+		"LTE": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryLessThanOrEqual,
+		},
+		"GT": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryGreaterThan,
+		},
+		"GTE": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryGreaterThanOrEqual,
+		},
+		"IN": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryIn,
+		},
+		"NOTIN": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotIn,
+		},
+		"LIKE": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryLike,
+		},
+		"NLIKE": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotLike,
+		},
+		"ISNULL": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryIsNull,
+		},
+		"ISNOTNULL": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryIsNotNull,
+		},
+		"CONTAINS": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryContains,
+		},
+		"NCONTAINS": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotContains,
+		},
+		"OVERLAPS": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryOverlaps,
+		},
+		"NOVERLAPS": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotOverlaps,
+		},
+		"ANY": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryAny,
+		},
+		"NANY": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotAny,
+		},
+		"ALL": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryAll,
+		},
+		"NALL": {
+			usedBy:        queryparser.NewSet[string]().Add(queryparser.RootFunc, "AND", "OR"),
+			Verifications: []verificationHandler{withKeyArg(), withNoLiterals()},
+			handle:        sp.queryNotAll,
+		},
+		"CAST": {
+			usedBy: queryparser.NewSet[string]().Add("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "IN", "NOTIN", "LIKE",
+				"NLIKE", "ANY", "NANY", "ALL", "NALL", "OVERLAPS", "NOVERLAPS", "CONTAINS", "NCONTAINS"),
+			Verifications: []verificationHandler{withValAndLiteral()},
+			handle:        sp.queryCast,
+		},
+		"K": {
+			usedBy: queryparser.NewSet[string]().Add("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "IN", "NOTIN", "LIKE",
+				"NLIKE", "ANY", "NANY", "ALL", "NALL", "OVERLAPS", "NOVERLAPS", "CONTAINS", "NCONTAINS", "ISNULL", "ISNOTNULL"),
+			handle: sp.queryKey,
+		},
+		"V": {
+			usedBy: queryparser.NewSet[string]().Add("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "IN", "NOTIN", "LIKE",
+				"NLIKE", "ANY", "NANY", "ALL", "NALL", "OVERLAPS", "NOVERLAPS", "CONTAINS", "NCONTAINS", "CAST"),
+			handle: sp.queryValue,
+		},
+	}
+
+	for _, option := range options {
+		if err := option(sp); err != nil {
+			return nil, err
+		}
+	}
+	return sp, nil
+}
+
+type parser struct {
+	sqlparser *SQLParser
+}
+
+// Parse constructs a SQL query based on the provided input.
+// This method tokenizes the input, verifies the structure of the tokens,
+// and executes the corresponding SQL functions to generate the final query
+// string along with its parameters.
+func (sp *SQLParser) Parse(ctx context.Context, input any, params ...string) (string, []string, error) {
+	if input == "" {
+		return "", nil, nil
+	}
+
+	p := &parser{
+		sqlparser: sp,
+	}
+
+	qfuncs := make(queryparser.QueryFuncSet, len(sp.funcs))
+	for f, h := range sp.funcs {
+		qfuncs[f] = queryparser.QueryFuncHandler{
+			Invoke: p.dispatcher,
+			UsedBy: h.usedBy,
+		}
+	}
+	parserOptions := []queryparser.ParserOption{queryparser.WithFunctions(qfuncs)}
+	if sp.tokenizer != nil {
+		parserOptions = append(parserOptions, queryparser.WithTokenizer(sp.tokenizer))
+	}
+
+	root, err := queryparser.Parse(ctx, input, params, parserOptions...)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if len(root.Args()) == 0 {
+		return "", nil, nil
+	}
+
+	if queryparser.IsLiteral(root.Args()[0]) {
+		return "", nil, fmt.Errorf("unexpected literal without a function")
+	}
+
+	f := root.Args()[0].(*queryparser.QueryArgFunc)
+	fr := f.Value().Result().(*FunctionResult)
+	return fr.Query, fr.Args, nil
+}
+
+func (p *parser) dispatcher(qf *queryparser.QueryFunc) error {
+	fn := qf.Name()
+
+	sqlf, exists := p.sqlparser.funcs[fn]
+	if !exists {
+		return fmt.Errorf("function is undefined")
+	}
+
+	for _, verify := range sqlf.Verifications {
+		if err := verify(qf); err != nil {
+			return fmt.Errorf("failed verification: %w", err)
+		}
+	}
+
+	var funcArgs, retArgs []string
+	for _, arg := range qf.Args() {
+		if queryparser.IsLiteral(arg) {
+			funcArgs = append(funcArgs, arg.(*queryparser.QueryArgLiteral).Value())
+		} else {
+			qfRet := arg.(*queryparser.QueryArgFunc).Value().Result().(*FunctionResult)
+			funcArgs = append(funcArgs, qfRet.Query)
+			retArgs = append(retArgs, qfRet.Args...)
+		}
+	}
+
+	res, err := sqlf.handle(funcArgs...)
+	if err != nil {
+		return err
+	}
+
+	if res == nil {
+		return fmt.Errorf("function returned a nil result")
+	}
+
+	ret := &FunctionResult{
+		Query: res.Query,
+		Args:  append(res.Args, retArgs...),
+	}
+
+	qf.SetResult(ret)
+	return nil
+}
+
+func (sp *SQLParser) queryAnd(queries ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(queries, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("(%s)", strings.Join(queries, " AND ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryOr(queries ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(queries, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("(%s)", strings.Join(queries, " OR ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryEqual(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s = %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotEqual(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s != %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryLessThan(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s < %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryLessThanOrEqual(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s <= %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryGreaterThan(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s > %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryGreaterThanOrEqual(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s >= %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryIn(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s IN (%s)", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotIn(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s NOT IN (%s)", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryLike(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s LIKE %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotLike(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s NOT LIKE %s", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryIsNull(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 1, 1); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s IS NULL", args[0]),
+	}, nil
+}
+
+func (sp *SQLParser) queryIsNotNull(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 1, 1); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s IS NOT NULL", args[0]),
+	}, nil
+}
+
+func (sp *SQLParser) queryContains(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s @> ARRAY[%s]", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotContains(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("NOT (%s @> ARRAY[%s])", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryOverlaps(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s && ARRAY[%s]", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotOverlaps(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("NOT (%s && ARRAY[%s])", args[0], strings.Join(args[1:], ", ")),
+	}, nil
+}
+
+func (sp *SQLParser) queryAny(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s = ANY(%s)", args[1], args[0]),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotAny(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s != ANY(%s)", args[1], args[0]),
+	}, nil
+}
+
+func (sp *SQLParser) queryAll(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s = ALL(%s)", args[1], args[0]),
+	}, nil
+}
+
+func (sp *SQLParser) queryNotAll(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Query: fmt.Sprintf("%s != ALL(%s)", args[1], args[0]),
+	}, nil
+}
+
+var validTypeRegex = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+func (sp *SQLParser) queryCast(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 2, 2); err != nil {
+		return nil, err
+	}
+
+	if !validTypeRegex.MatchString(args[1]) {
+		return nil, fmt.Errorf("invalid type provided")
+	}
+
+	// args[0] is the value to be casted, args[1] is the type
+	return &FunctionResult{
+		Query: fmt.Sprintf("CAST(%s AS %s)", args[0], args[1]),
+	}, nil
+}
+
+func (sp *SQLParser) queryKey(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 1, 1); err != nil {
+		return nil, err
+	}
+
+	key := args[0]
+	if !isValidColumnName(key) {
+		return nil, fmt.Errorf("invalid column name: %s", key)
+	}
+
+	return &FunctionResult{
+		Query: key,
+	}, nil
+}
+
+func (sp *SQLParser) queryValue(args ...string) (*FunctionResult, error) {
+	if err := validateArgsCount(args, 1, 1); err != nil {
+		return nil, err
+	}
+
+	return &FunctionResult{
+		Args:  args,
+		Query: "?",
+	}, nil
+}
+
+var columnRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+func isValidColumnName(name string) bool {
+	return name != "" && columnRegex.MatchString(name)
+}
+
+func validateArgsCount(args []string, opts ...int) error {
+	min, max := 0, math.MaxInt
+	if len(opts) > 0 {
+		min = opts[0]
+	}
+	if len(opts) > 1 {
+		max = opts[1]
+	}
+
+	if len(args) < min {
+		return fmt.Errorf("function requires at least %d arguments", min)
+	}
+	if len(args) > max {
+		return fmt.Errorf("function accepts up to %d arguments", max)
+	}
+	return nil
+}
