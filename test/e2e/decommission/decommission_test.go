@@ -181,11 +181,11 @@ var _ = Describe("CLI decommission test", func() {
 			)
 			Expect(err).NotTo(HaveOccurred(), "HTTP request itself should not fail")
 			Expect(response.HTTPResponse).NotTo(BeNil())
-			Expect(response.HTTPResponse.StatusCode).To(Equal(http.StatusInternalServerError),
-				"Expected 500 for malformed JSON body, got %d", response.HTTPResponse.StatusCode)
+			Expect(response.HTTPResponse.StatusCode).To(Equal(http.StatusBadRequest),
+				"Expected 400 for malformed JSON body, got %d", response.HTTPResponse.StatusCode)
 			Expect(string(response.Body)).To(ContainSubstring("can't decode JSON body"),
 				"Expected parse failure message in response body")
-			GinkgoWriter.Printf("Received expected 500 response: %s\n", string(response.Body))
+			GinkgoWriter.Printf("Received expected 400 response: %s\n", string(response.Body))
 		})
 	})
 
