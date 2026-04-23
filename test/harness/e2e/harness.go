@@ -88,10 +88,12 @@ const fiveSecondTimeout = 5 * time.Second
 // setupSnapshotRestoreTimeout is the maximum time allowed for VM snapshot restore in BeforeEach.
 const setupSnapshotRestoreTimeout = 10 * time.Minute
 
-const POLLING = "250ms"
-const POLLINGLONG = "1s"
-const TIMEOUT = "5m"
-const LONGTIMEOUT = "10m"
+const (
+	POLLING     = "250ms"
+	POLLINGLONG = "1s"
+	TIMEOUT     = "5m"
+	LONGTIMEOUT = "10m"
+)
 
 // Operation constants for RBAC testing
 const (
@@ -368,7 +370,7 @@ func (h *Harness) PrintAgentLogsIfFailed() {
 // Registered via DeferCleanup in SetTestContext so it runs for every test.
 func (h *Harness) checkLogsForPanicAVC(sinceTime time.Time) {
 	var findings []string
-	sinceArg := sinceTime.UTC().Format(time.RFC3339)
+	sinceArg := sinceTime.UTC().Format("2006-01-02 15:04:05 UTC")
 
 	if h.VM != nil {
 		if running, err := h.VM.IsRunning(); err == nil && running {
@@ -451,7 +453,6 @@ func (h *Harness) GetEnrollmentIDFromServiceLogs(serviceName string) string {
 	Eventually(func() string {
 		// Get logs from the latest service invocation using systemd invocation ID
 		output, err := h.GetServiceLogs(serviceName)
-
 		if err != nil {
 			logrus.Debugf("Failed to get service logs: %v", err)
 			return ""
@@ -591,7 +592,6 @@ func (h *Harness) SHWithStdin(stdin, command string, args ...string) (string, er
 
 	logrus.Infof("running: %s with stdin: %s", strings.Join(cmd.Args, " "), stdin)
 	output, err := cmd.CombinedOutput()
-
 	if err != nil {
 		logrus.Errorf("executing cli: %s", err)
 		// keeping standard error output for debugging, otherwise log output
@@ -634,7 +634,6 @@ func (h *Harness) CLIWithEnvAndShell(env map[string]string, shellCommand string)
 
 	logrus.Infof("running shell command with env: %v", env)
 	output, err := cmd.CombinedOutput()
-
 	if err != nil {
 		logrus.Errorf("executing shell command: %s", err)
 		// keeping standard error output for debugging, otherwise log output
@@ -742,6 +741,7 @@ func (h *Harness) EnrollAndWaitForOnlineStatus(labels ...map[string]string) (str
 	Expect(*device.Status.Summary.Info).To(Equal(service.DeviceStatusInfoHealthy))
 	return deviceId, device
 }
+
 func (h *Harness) TestEnrollmentApproval(labels ...map[string]string) *v1beta1.EnrollmentRequestApproval {
 	mergedLabels := map[string]string{"test-id": h.GetTestIDFromContext()}
 	for _, label := range labels {
@@ -955,7 +955,7 @@ func (h *Harness) CreateRepository(repositorySpec v1beta1.RepositorySpec, metada
 	// Add test label to metadata
 	h.addTestLabelToResource(&metadata)
 
-	var repository = v1beta1.Repository{
+	repository := v1beta1.Repository{
 		ApiVersion: v1beta1.RepositoryAPIVersion,
 		Kind:       v1beta1.RepositoryKind,
 
@@ -968,7 +968,7 @@ func (h *Harness) CreateRepository(repositorySpec v1beta1.RepositorySpec, metada
 
 // ReplaceRepository ensures the specified repository exists and is updated to the appropriate values
 func (h *Harness) ReplaceRepository(repositorySpec v1beta1.RepositorySpec, metadata v1beta1.ObjectMeta) error {
-	var repository = v1beta1.Repository{
+	repository := v1beta1.Repository{
 		ApiVersion: v1beta1.RepositoryAPIVersion,
 		Kind:       v1beta1.RepositoryKind,
 
@@ -1447,7 +1447,7 @@ func newTestHarnessBase(ctx context.Context) (*Harness, error) {
 
 	// Initialize git repository management
 	gitWorkDir := filepath.Join(GinkgoT().TempDir(), "git-repos")
-	err = os.MkdirAll(gitWorkDir, 0755)
+	err = os.MkdirAll(gitWorkDir, 0o755)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create git work directory: %w", err)
@@ -2081,7 +2081,6 @@ func ExecuteReadOnlyResourceOperations(harness *Harness, resourceTypes []string,
 			if err == nil {
 				return fmt.Errorf("listing %s should fail but succeeded", resourceType)
 			}
-
 		}
 	}
 	return nil
@@ -2089,7 +2088,6 @@ func ExecuteReadOnlyResourceOperations(harness *Harness, resourceTypes []string,
 
 // GetVersionsFromCLI returns client, server, and agent versions from the flightctl CLI version command
 func (h *Harness) GetVersionsFromCLI() (clientVersion, serverVersion, agentVersion string, err error) {
-
 	versionOutput, err := h.CLI("version")
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to get version from CLI: %w", err)
@@ -2345,7 +2343,7 @@ func main() {
 			return
 		}
 		srcPath := filepath.Join(td, "main.go")
-		if err := os.WriteFile(srcPath, []byte(src), 0600); err != nil {
+		if err := os.WriteFile(srcPath, []byte(src), 0o600); err != nil {
 			editorBuildErr = fmt.Errorf("write src: %w", err)
 			return
 		}
