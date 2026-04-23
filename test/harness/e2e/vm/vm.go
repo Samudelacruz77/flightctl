@@ -202,7 +202,7 @@ func (v *TestVM) JournalLogs(opts JournalOpts) (string, error) {
 	}
 
 	if opts.Since != "" {
-		args = append(args, "--since", fmt.Sprintf("%q", opts.Since))
+		args = append(args, "--since", opts.Since)
 	}
 
 	logrus.Debugf("Reading journal logs with command: %s", strings.Join(args, " "))
