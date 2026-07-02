@@ -153,7 +153,9 @@ func (br *BackupRestore) RunFlightCtlBackupRaw(args ...string) (output string, e
 }
 
 // RunFlightCtlRestoreRaw runs the flightctl-restore binary with the given arguments.
-// Useful for negative tests (bad args, corrupted archives, etc.).
+// For quadlet: when the first argument is an existing file (archive), copies binary+archive+checksum
+// to the quadlet VM and runs there. Otherwise runs locally (for tests that expect early CLI errors).
+// For K8s: always runs locally.
 // Returns combined stdout+stderr and any execution error.
 func (br *BackupRestore) RunFlightCtlRestoreRaw(args ...string) (output string, err error) {
 	restoreBinary := br.GetFlightctlRestorePath()
@@ -163,6 +165,12 @@ func (br *BackupRestore) RunFlightCtlRestoreRaw(args ...string) (output string, 
 
 	ctx, cancel := context.WithTimeout(br.Context, util.DURATION_TIMEOUT)
 	defer cancel()
+
+	if br.providers.Infra.GetEnvironmentType() == infra.EnvironmentQuadlet && len(args) > 0 {
+		if _, statErr := os.Stat(args[0]); statErr == nil {
+			return br.runRestoreOnQuadletRaw(ctx, restoreBinary, args[0], args[1:]...)
+		}
+	}
 
 	cmd := exec.CommandContext(ctx, restoreBinary, args...)
 	out, err := cmd.CombinedOutput()
@@ -256,6 +264,40 @@ func (br *BackupRestore) runBackupOnQuadlet(ctx context.Context, backupBinary, o
 	}
 
 	return hostArchivePath, hostChecksumPath, nil
+}
+
+// runRestoreOnQuadletRaw copies binary+archive+checksum to the quadlet VM,
+// runs the restore there, and returns combined output. Used by RunFlightCtlRestoreRaw
+// for tests that need to inspect the output.
+func (br *BackupRestore) runRestoreOnQuadletRaw(ctx context.Context, restoreBinary, archivePath string, extraArgs ...string) (string, error) {
+	quadletProvider, ok := br.providers.Infra.(*quadlet.InfraProvider)
+	if !ok {
+		return "", fmt.Errorf("expected quadlet provider but got different type")
+	}
+
+	if err := copyBinaryToVM(ctx, quadletProvider, restoreBinary, vmRestoreBinaryPath); err != nil {
+		return "", err
+	}
+
+	archiveContent, err := os.ReadFile(archivePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read backup archive: %w", err)
+	}
+	if err := uploadFileToVM(ctx, quadletProvider, archiveContent, vmRestoreArchive); err != nil {
+		return "", fmt.Errorf("failed to copy backup to VM: %w", err)
+	}
+
+	checksumPath := archivePath + ".sha256"
+	if checksumContent, readErr := os.ReadFile(checksumPath); readErr == nil {
+		if uploadErr := uploadFileToVM(ctx, quadletProvider, checksumContent, vmRestoreArchive+".sha256"); uploadErr != nil {
+			return "", fmt.Errorf("failed to copy checksum to VM: %w", uploadErr)
+		}
+	}
+
+	restoreCmdArgs := append([]string{vmRestoreBinaryPath, vmRestoreArchive}, extraArgs...)
+	output, cmdErr := quadletProvider.RunCommandContext(ctx, restoreCmdArgs...)
+	fmt.Fprint(ginkgo.GinkgoWriter, output)
+	return output, cmdErr
 }
 
 // runRestoreOnQuadlet copies the restore binary and archive to the quadlet VM, then runs restore there.
