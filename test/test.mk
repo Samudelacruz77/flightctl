@@ -253,13 +253,19 @@ start-trustify:
 stop-trustify:
 	go run ./cmd/aux-service stop trustify
 
+start-squid:
+	go run ./cmd/aux-service start squid
+
+stop-squid:
+	go run ./cmd/aux-service stop squid
+
 start-aux: bin/e2e-certs/ca.pem
 	go run ./cmd/aux-service start all
 
 stop-aux:
 	go run ./cmd/aux-service stop all
 
-.PHONY: start-registry stop-registry start-git-server stop-git-server start-prometheus stop-prometheus start-tracing stop-tracing start-keycloak stop-keycloak start-trustify stop-trustify start-aux stop-aux
+.PHONY: start-registry stop-registry start-git-server stop-git-server start-prometheus stop-prometheus start-tracing stop-tracing start-keycloak stop-keycloak start-trustify stop-trustify start-squid stop-squid start-aux stop-aux
 .PHONY: unit-test prepare-integration-test integration-test run-integration-test build-integration-preflight start-integration-services stop-integration-services view-coverage prepare-e2e-test deploy-e2e-ocp-test-vm prepare-swtpm-certs clean-swtpm-certs
 
 # Schemathesis API testing

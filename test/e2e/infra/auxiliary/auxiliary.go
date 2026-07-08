@@ -30,6 +30,7 @@ type Services struct {
 	Keycloak   *Keycloak
 	Trustify   *Trustify
 	FileServer *FileServer
+	Squid      *Squid
 
 	reuse bool
 }
@@ -45,6 +46,7 @@ const (
 	ServiceKeycloak   Service = "keycloak"
 	ServiceTrustify   Service = "trustify"
 	ServiceFileServer Service = "file-server"
+	ServiceSquid      Service = "squid"
 )
 
 // AllServices is the default set of shared aux services (started by Get(ctx)).
@@ -120,6 +122,11 @@ func StartServices(ctx context.Context, services []Service) (*Services, error) {
 			if err := s.FileServer.Start(ctx, network, reuse); err != nil {
 				return nil, fmt.Errorf("failed to start file server: %w", err)
 			}
+		case ServiceSquid:
+			s.Squid = &Squid{}
+			if err := s.Squid.Start(ctx, network, reuse); err != nil {
+				return nil, fmt.Errorf("failed to start squid: %w", err)
+			}
 		default:
 			return nil, fmt.Errorf("unknown service: %q", svc)
 		}
@@ -146,6 +153,7 @@ var serviceContainerNames = map[Service]string{
 	ServiceKeycloak:   keycloakContainerName,
 	ServiceTrustify:   trustifyAPIContainer,
 	ServiceFileServer: fileServerContainerName,
+	ServiceSquid:      squidContainerName,
 }
 
 // StopServices force-removes the containers for the requested aux services.

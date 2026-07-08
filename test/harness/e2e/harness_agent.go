@@ -383,6 +383,17 @@ func (h *Harness) CreateAgentDropIn(filename, content string) error {
 	return nil
 }
 
+// RemoveAgentDropIn removes a systemd drop-in file for the flightctl-agent service.
+func (h *Harness) RemoveAgentDropIn(filename string) error {
+	path := "/etc/systemd/system/flightctl-agent.service.d/" + filename
+	if _, err := h.VM.RunSSH([]string{
+		"sudo", "rm", "-f", path,
+	}, nil); err != nil {
+		return fmt.Errorf("failed to remove drop-in %s: %w", filename, err)
+	}
+	return nil
+}
+
 func (h *Harness) VMDaemonReload() error {
 	_, err := h.VM.RunSSH([]string{"sudo", "systemctl", "daemon-reload"}, nil)
 	if err != nil {
