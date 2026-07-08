@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/flightctl/flightctl/test/harness/e2e"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,11 +21,11 @@ var _ = Describe("Agent HTTP proxy support", func() {
 		harness := e2e.GetWorkerHarness()
 
 		By("discovering the API server endpoint from the VM agent config")
-		apiIP, apiPort, err := harness.GetAPIEndpointFromVM()
+		apiHost, apiIP, apiPort, err := harness.GetAPIEndpointHostIPPortFromVM()
 		Expect(err).ToNot(HaveOccurred(), "failed to read API endpoint from agent config")
 		Expect(apiIP).ToNot(BeEmpty(), "API server IP should not be empty")
 		Expect(apiPort).ToNot(BeEmpty(), "API server port should not be empty")
-		GinkgoWriter.Printf("API endpoint: %s:%s\n", apiIP, apiPort)
+		GinkgoWriter.Printf("API endpoint: host=%s ip=%s port=%s\n", apiHost, apiIP, apiPort)
 
 		By("discovering the VM default gateway to reach host services")
 		gatewayIP, err := getVMDefaultGateway(harness)
@@ -59,8 +60,11 @@ var _ = Describe("Agent HTTP proxy support", func() {
 		GinkgoWriter.Printf("Device %s enrolled and online via proxy\n", deviceID)
 
 		By("verifying Squid access logs contain CONNECT entries for the API server")
-		err = verifySquidLogs(apiIP, apiPort)
-		Expect(err).ToNot(HaveOccurred())
+		connectTarget := buildConnectTarget(apiHost, apiIP, apiPort)
+		Eventually(func() error {
+			return verifySquidLogs(connectTarget)
+		}, 30*time.Second, time.Second).Should(Succeed(),
+			"squid access logs should contain CONNECT entry for %s", connectTarget)
 
 		By("verifying VM network connections include the proxy endpoint")
 		ssCmd := fmt.Sprintf("ss -tnp | grep %s:%s || true", gatewayIP, squidSvc.Port)
@@ -92,14 +96,23 @@ func buildProxyDropIn(proxyURL string) string {
 	return fmt.Sprintf("[Service]\nEnvironment=\"HTTPS_PROXY=%s\"\nEnvironment=\"HTTP_PROXY=%s\"\n", proxyURL, proxyURL)
 }
 
-func verifySquidLogs(apiHost, apiPort string) error {
+// buildConnectTarget returns the host:port string to look for in Squid CONNECT logs.
+// HTTP CONNECT uses the hostname from the request URL, not the resolved IP.
+func buildConnectTarget(apiHost, apiIP, apiPort string) string {
+	host := apiHost
+	if host == "" {
+		host = apiIP
+	}
+	return fmt.Sprintf("%s:%s", host, apiPort)
+}
+
+func verifySquidLogs(connectTarget string) error {
 	logs, err := squidSvc.AccessLogs()
 	if err != nil {
 		return fmt.Errorf("failed to read squid access logs: %w", err)
 	}
-	target := fmt.Sprintf("%s:%s", apiHost, apiPort)
-	if !containsConnectEntry(logs, target) {
-		return fmt.Errorf("squid access logs do not contain CONNECT entry for %s; logs:\n%s", target, logs)
+	if !containsConnectEntry(logs, connectTarget) {
+		return fmt.Errorf("squid access logs do not contain CONNECT entry for %s; logs:\n%s", connectTarget, logs)
 	}
 	return nil
 }

@@ -61,11 +61,11 @@ func (s *Squid) Start(ctx context.Context, network string, reuse bool) error {
 	return nil
 }
 
-// AccessLogs returns the Squid container's stdout which contains access log entries.
+// AccessLogs returns the Squid container's combined stdout and stderr which contain access log entries.
 func (s *Squid) AccessLogs() (string, error) {
 	//nolint:gosec // G204: squidContainerName is a package constant, not user input.
 	cmd := exec.Command(containerRuntimeCLIName(), "logs", squidContainerName)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to read squid logs: %w", err)
 	}
