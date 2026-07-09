@@ -74,6 +74,9 @@ var _ = Describe("Agent HTTP proxy support", func() {
 			return verifySquidLogs(connectTarget)
 		}, 30*time.Second, time.Second).Should(Succeed(),
 			"squid access logs should contain CONNECT entry for %s", connectTarget)
+
+		By("printing Squid access logs for diagnostics")
+		printSquidAccessLogs()
 	})
 })
 
@@ -119,6 +122,21 @@ func verifySquidLogs(connectTarget string) error {
 		return fmt.Errorf("squid access logs do not contain CONNECT entry for %s; logs:\n%s", connectTarget, logs)
 	}
 	return nil
+}
+
+func printSquidAccessLogs() {
+	logs, err := squidSvc.AccessLogs()
+	if err != nil {
+		GinkgoWriter.Printf("Failed to read Squid logs: %v\n", err)
+		return
+	}
+	GinkgoWriter.Printf("--- Squid access logs ---\n")
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "CONNECT") || strings.Contains(line, "TCP_TUNNEL") {
+			GinkgoWriter.Printf("  %s\n", line)
+		}
+	}
+	GinkgoWriter.Printf("--- End Squid access logs ---\n")
 }
 
 func containsConnectEntry(logs, target string) bool {
