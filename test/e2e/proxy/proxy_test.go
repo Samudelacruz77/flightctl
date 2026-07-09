@@ -59,17 +59,21 @@ var _ = Describe("Agent HTTP proxy support", func() {
 		Expect(deviceID).ToNot(BeEmpty(), "device should have enrolled through the proxy")
 		GinkgoWriter.Printf("Device %s enrolled and online via proxy\n", deviceID)
 
+		By("verifying VM network connections include the proxy endpoint")
+		ssCmd := fmt.Sprintf("ss -tnp | grep %s:%s || true", gatewayIP, squidSvc.Port)
+		Eventually(harness.VMCommandOutputFunc(ssCmd, false), proxyTimeout, proxyPolling).
+			ShouldNot(BeEmpty(), "VM should have TCP connections to the proxy at %s:%s", gatewayIP, squidSvc.Port)
+
+		By("stopping the agent to flush Squid CONNECT tunnel log entries")
+		err = harness.StopFlightCtlAgent()
+		Expect(err).ToNot(HaveOccurred(), "failed to stop flightctl-agent")
+
 		By("verifying Squid access logs contain CONNECT entries for the API server")
 		connectTarget := buildConnectTarget(apiHost, apiIP, apiPort)
 		Eventually(func() error {
 			return verifySquidLogs(connectTarget)
 		}, 30*time.Second, time.Second).Should(Succeed(),
 			"squid access logs should contain CONNECT entry for %s", connectTarget)
-
-		By("verifying VM network connections include the proxy endpoint")
-		ssCmd := fmt.Sprintf("ss -tnp | grep %s:%s || true", gatewayIP, squidSvc.Port)
-		Eventually(harness.VMCommandOutputFunc(ssCmd, false), proxyTimeout, proxyPolling).
-			ShouldNot(BeEmpty(), "VM should have TCP connections to the proxy at %s:%s", gatewayIP, squidSvc.Port)
 	})
 })
 
